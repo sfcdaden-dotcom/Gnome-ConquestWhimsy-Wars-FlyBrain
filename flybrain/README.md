@@ -63,6 +63,29 @@ brake. Tuning lives in `FLY_REWARDS`, `FLY_PRIORITY` and `FLY_FIGHT_ODDS`.
   good whether or not they caused the win), so the next idea is to tune the
   handful of incentive weights directly by win rate instead.
 
+## The game circuit
+
+`extract_circuit.py` runs the whole-brain model under 21 stimulation patterns
+of four sensory channels (sugar LB3, bitter LB1, looming LPLC2/LC4, object
+LC9/LC31) and records every neuron that fires. `prune_circuit.py` keeps the
+neurons on paths of at most N synapses from inputs to the four outputs (feed
+MN9, escape DNp01 Giant Fiber, approach DNp09, retreat MDN), drops weak
+connections, and re-simulates the cut against the whole brain.
+`export_circuit_ts.py` packs the chosen cut into the game's
+`src/engine/ai/flyCircuitData.ts` (main repository).
+
+The shipped cut is `--export 4 --min-weight 5`: 3,962 neurons, 112,620
+connections, mean error about 3.6 Hz over the output channels. Findings from
+the whole brain: sugar drives MN9 at 57–92 Hz, bitter alone drives nothing but
+halves sugar-driven feeding, looming drives the Giant Fiber at 123–203 Hz,
+object drives DNp09 at 31–148 Hz, and looming or an object in view shuts
+feeding off. The pC1d/e arousal neurons first tried for approach reached
+nothing, so the object channel replaced them.
+
+Cell types come from the FlyWire annotations v2.1.0
+(`data/flywire_annotations_v2.1.0.tsv`, from
+github.com/flyconnectome/flywire_annotations).
+
 ## What's here
 
 | Path | What it is |

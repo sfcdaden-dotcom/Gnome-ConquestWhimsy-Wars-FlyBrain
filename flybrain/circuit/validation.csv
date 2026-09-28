@@ -1,0 +1,2 @@
+max_path,min_weight,neurons,connections,mean_abs_err_hz,max_abs_err_hz
+4,5,3962,112620,3.566468253968253,27.5
