@@ -1,0 +1,6 @@
+# Fly brain simulator. Tested on Python 3.11.
+brian2==2.9.0
+numpy>=2.0,<2.4  # brian2 2.9 still calls ndarray.ptp, removed in numpy 2.4
+pandas==3.0.6
+pyarrow==25.0.1
+joblib==1.6.0

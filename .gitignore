@@ -35,3 +35,8 @@ dist-ssr
 !.dev.vars.example
 .env*
 !.env.example
+
+# Fly brain (Python)
+flybrain/.venv/
+flybrain/results/
+__pycache__/
