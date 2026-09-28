@@ -173,6 +173,7 @@ export {
   flyRewardLog,
   parseFlyBrain,
   trainedFlyBrain,
+  FLY_INTENT,
 } from './ai';
 export type {
   AiMemory,
@@ -182,6 +183,7 @@ export type {
   FlyDrives,
   FlyRewardEntry,
   FlyTag,
+  OpponentProfiles,
   Objective,
   ObjectiveKind,
   StrategicState,

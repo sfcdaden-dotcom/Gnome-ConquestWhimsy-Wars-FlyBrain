@@ -163,7 +163,9 @@ export {
   parseFlyBrain,
   trainedFlyBrain,
 } from './fly';
+export { FLY_INTENT } from './flyIntent';
 export type { FlyBrain, FlyDrives, FlyRewardEntry, FlyTag } from './fly';
+export type { OpponentProfiles } from './flyIntent';
 
 /**
  * Pick one legal action for the player who must act.

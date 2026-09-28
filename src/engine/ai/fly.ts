@@ -43,10 +43,13 @@
  */
 
 import type { Action, GameEvent, GameState, PlayerId, Pos } from '../types';
-import { enemyUnitsAt, gardenAt, manhattan, playerUnitsAt } from '../helpers';
+import { enemyUnitsAt, gardenAt, manhattan, playerUnitsAt, posKey } from '../helpers';
 import { END_TURN_SCORE, ownedEconomyGardens, primaryTarget } from './scoring';
 import { desperation, enemyGnomes, ownGnomes } from './util';
 import { TRAINED_FLY_BRAIN } from './trainedFlyBrain';
+import { TUNED_FLY_PARAMS } from './tunedFlyParams';
+import type { FlyIntent, OpponentProfiles, Sighting } from './flyIntent';
+import { FLY_INTENT, heldEconomyGardens, readIntent, recordHabits, snapshot } from './flyIntent';
 
 // ---------------------------------------------------------------------------
 // Tuning — every knob that shapes the fly's personality
@@ -114,7 +117,22 @@ export const FLY_THREAT = {
 };
 
 /** Minimum win probability to take the Nth fight of a turn (index 0 = first). */
-export const FLY_FIGHT_ODDS = [0.4, 0.62, 0.85] as const;
+export const FLY_FIGHT_ODDS: number[] = [0.4, 0.62, 0.85];
+
+/**
+ * The values above (and FLY_INTENT) are hand-set defaults. `npm run tune:fly`
+ * searches for better ones by win rate and writes them to tunedFlyParams.ts,
+ * which overrides the defaults here at load.
+ */
+function applyTunedParams(): void {
+  const t = TUNED_FLY_PARAMS;
+  if (!t) return;
+  Object.assign(FLY_PRIORITY, t.priority);
+  if (t.fightOdds) FLY_FIGHT_ODDS.splice(0, FLY_FIGHT_ODDS.length, ...t.fightOdds);
+  Object.assign(FLY_THREAT, t.threat);
+  Object.assign(FLY_INTENT, t.intent);
+}
+applyTunedParams();
 
 /** How the post-game review turns the logs into learning. */
 export const FLY_REVIEW = {
@@ -194,6 +212,8 @@ interface FlyEpisode {
   fightsThisTurn: number;
   /** Gardens held at the start of the fly's last turn (null before the first). */
   territory: number | null;
+  /** Enemy gnome positions at the start of each of the fly's turns. */
+  sightings: Sighting[];
   /** Orders choices and rewards, so a reward credits only earlier choices. */
   seq: number;
   choices: Array<{ seq: number; turn: number; keys: string[] }>;
@@ -205,6 +225,14 @@ interface FlyEpisode {
 export interface FlyMemory {
   brain: FlyBrain;
   episodes: Map<PlayerId, FlyEpisode>;
+  /** What the fly has read of each opponent's habits; keep across games. */
+  opponents: OpponentProfiles;
+  /**
+   * Whether the post-game review may change the brain. Off by default: so far
+   * no learned brain has beaten one that never learns (see trainedFlyBrain.ts).
+   * The trainer turns it on. Opponent profiles are recorded either way.
+   */
+  learn: boolean;
 }
 
 /** Everything one decision needs, gathered once by `flyObserve`. */
@@ -213,6 +241,7 @@ export interface FlyContext {
   episode: FlyEpisode;
   drives: FlyDrives;
   situation: string;
+  intent: FlyIntent;
 }
 
 // ---------------------------------------------------------------------------
@@ -229,8 +258,11 @@ export function trainedFlyBrain(): FlyBrain {
   return structuredClone(TRAINED_FLY_BRAIN);
 }
 
-export function createFlyMemory(brain: FlyBrain = createFlyBrain()): FlyMemory {
-  return { brain, episodes: new Map() };
+export function createFlyMemory(
+  brain: FlyBrain = createFlyBrain(),
+  options: { opponents?: OpponentProfiles; learn?: boolean } = {},
+): FlyMemory {
+  return { brain, episodes: new Map(), opponents: options.opponents ?? new Map(), learn: options.learn ?? false };
 }
 
 /** Read a brain back from JSON, or null if it is not one we understand. */
@@ -302,17 +334,6 @@ export function threatenedGardens(state: GameState, player: PlayerId): Array<{ p
   return out;
 }
 
-function heldEconomyGardens(state: GameState, player: PlayerId): Pos[] {
-  const out: Pos[] = [];
-  for (const [key, g] of Object.entries(state.gardens)) {
-    if (g.type !== 'dandelion' && g.type !== 'mushroom' && g.type !== 'maize') continue;
-    const [x, y] = key.split(',').map(Number);
-    const pos = { x, y };
-    if (playerUnitsAt(state, pos, player).some((u) => u.kind === 'gnome')) out.push(pos);
-  }
-  return out;
-}
-
 /**
  * How alarming it is to act on `pos`: the loudest alarm among threatened held
  * gardens within the threat radius of it. 0 when `pos` is nowhere near one —
@@ -341,7 +362,12 @@ function situationOf(drives: FlyDrives): string {
 // ---------------------------------------------------------------------------
 
 /** The incentive tags an action touches. A move can be several at once. */
-export function flyTags(state: GameState, player: PlayerId, action: Action): FlyTag[] {
+export function flyTags(
+  state: GameState,
+  player: PlayerId,
+  action: Action,
+  intent: FlyIntent | null = null,
+): FlyTag[] {
   switch (action.type) {
     case 'move': {
       const tags: FlyTag[] = [];
@@ -349,8 +375,11 @@ export function flyTags(state: GameState, player: PlayerId, action: Action): Fly
       if (fight) tags.push('fight');
       const g = gardenAt(state, action.to);
       const held = playerUnitsAt(state, action.to, player).some((u) => u.kind === 'gnome');
-      // Kill a raider near our gardens, or reinforce a garden under threat.
-      if (localAlarm(state, player, action.to) > 0 && (fight || held)) tags.push('defend');
+      // Kill a raider near our gardens, or reinforce a garden under threat —
+      // present (alarm) or predicted (intent).
+      if (defendDrive(state, player, action.to, intent) > 0 && (fight || held || isOwnAsset(state, player, action.to))) {
+        tags.push('defend');
+      }
       if (g && !held && g.type !== 'flytrap' && !(g.type === 'home' && g.owner === player)) {
         tags.push('territory');
         if (g.type === 'dandelion' || g.type === 'mushroom' || g.type === 'maize') tags.push('harvest');
@@ -374,6 +403,30 @@ export function flyTags(state: GameState, player: PlayerId, action: Action): Fly
     default:
       return [];
   }
+}
+
+/**
+ * How much acting on `pos` defends us: the present alarm there, a predicted
+ * threat on the asset at `pos` (reinforcing it early), or an enemy there that
+ * is likely heading for our assets (intercepting it).
+ */
+function defendDrive(state: GameState, player: PlayerId, pos: Pos, intent: FlyIntent | null): number {
+  let drive = localAlarm(state, player, pos);
+  if (!intent) return drive;
+  const predicted = intent.threat.get(posKey(pos)) ?? 0;
+  if (predicted >= FLY_INTENT.anticipateAt) drive = Math.max(drive, predicted);
+  for (const u of enemyUnitsAt(state, pos, player)) {
+    const hostile = intent.hostile.get(u.id) ?? 0;
+    if (hostile >= FLY_INTENT.interceptAt) drive = Math.max(drive, hostile);
+  }
+  return drive;
+}
+
+/** Our Home, or an economy garden we hold. */
+function isOwnAsset(state: GameState, player: PlayerId, pos: Pos): boolean {
+  const g = gardenAt(state, pos);
+  if (g?.type === 'home') return g.owner === player;
+  return heldEconomyGardens(state, player).some((p) => p.x === pos.x && p.y === pos.y);
 }
 
 /** Win probability of a move that starts a fight (gambler's ruin, 1 vs N). */
@@ -411,10 +464,16 @@ export function flyObserve(state: GameState, player: PlayerId, memory: FlyMemory
         `${delta > 0 ? 'gained' : 'lost'} ${Math.abs(delta)} garden${Math.abs(delta) === 1 ? '' : 's'}`);
     }
     episode.territory = held;
+    // Snapshot the enemy for the intent reader, and file this turn's reads of
+    // each opponent under their profile.
+    episode.sightings.push(snapshot(state, player));
+    if (episode.sightings.length > FLY_INTENT.lookback + 1) episode.sightings.shift();
+    recordHabits(state, readIntent(state, player, episode.sightings, memory.opponents), memory.opponents);
   }
 
+  const intent = readIntent(state, player, episode.sightings, memory.opponents);
   const drives = flyDrives(state, player);
-  return { brain: memory.brain, episode, drives, situation: situationOf(drives) };
+  return { brain: memory.brain, episode, drives, situation: situationOf(drives), intent };
 }
 
 /**
@@ -425,15 +484,27 @@ export function flyObserve(state: GameState, player: PlayerId, memory: FlyMemory
 export function flyBias(ctx: FlyContext, state: GameState, player: PlayerId, action: Action): number {
   const { drives } = ctx;
   let bias = 0;
-  for (const tag of flyTags(state, player, action)) {
+  for (const tag of flyTags(state, player, action, ctx.intent)) {
     let drive = 1;
     if (tag === 'territory') drive = 0.5 + 0.5 * drives.aggression;
     else if (tag === 'plant' || tag === 'harvest') drive = drives.hunger;
     else if (tag === 'fight') drive = drives.aggression / drives.fear;
-    else if (tag === 'defend' && action.type === 'move') drive = localAlarm(state, player, action.to);
+    else if (tag === 'defend' && action.type === 'move') drive = defendDrive(state, player, action.to, ctx.intent);
+    else if (tag === 'advance') drive = 1 + FLY_INTENT.counterattack * exposureAhead(state, player, action, ctx.intent);
     bias += FLY_PRIORITY[tag] * drive + learned(ctx, tag);
   }
   return bias;
+}
+
+/** Exposure of the enemy Home this move advances on (0 when it advances on none). */
+function exposureAhead(state: GameState, player: PlayerId, action: Action, intent: FlyIntent): number {
+  if (action.type !== 'move') return 0;
+  const unit = state.units[action.unitId];
+  if (!unit) return 0;
+  const target = primaryTarget(state, player, unit.pos);
+  const g = gardenAt(state, target);
+  if (!g || g.type !== 'home' || g.owner === undefined || g.owner === player) return 0;
+  return intent.exposure.get(g.owner) ?? 0;
 }
 
 /**
@@ -451,7 +522,7 @@ export function flyBrake(ctx: FlyContext, state: GameState, player: PlayerId, ac
     0.15 * (ctx.drives.fear - 1) - // scarce reinforcements raise every bar
     0.1 * (ctx.drives.aggression - 1) - // a stronger force lowers it a little
     (storming ? 0.1 : 0) -
-    FLY_THREAT.oddsRelief * Math.min(2, action.type === 'move' ? localAlarm(state, player, action.to) : 0);
+    FLY_THREAT.oddsRelief * Math.min(2, action.type === 'move' ? defendDrive(state, player, action.to, ctx.intent) : 0);
   if (odds < bar) return Math.min(score, END_TURN_SCORE - 0.05);
   // Accepted — but still priced: the expected loss, heavier when gnomes are scarce.
   return score - (1 - odds) * 2 * ctx.drives.fear;
@@ -459,7 +530,7 @@ export function flyBrake(ctx: FlyContext, state: GameState, player: PlayerId, ac
 
 /** Log a choice the fly actually made, for the post-game review. */
 export function flyRecordChoice(ctx: FlyContext, state: GameState, player: PlayerId, action: Action): void {
-  const keys = flyTags(state, player, action).map((tag) => `${ctx.situation}:${tag}`);
+  const keys = flyTags(state, player, action, ctx.intent).map((tag) => `${ctx.situation}:${tag}`);
   if (keys.length === 0) return;
   const ep = ctx.episode;
   ep.choices.push({ seq: ep.seq++, turn: state.turn?.number ?? 0, keys });
@@ -478,7 +549,7 @@ export function finishFlyGames(state: GameState, memory: FlyMemory): void {
     if (!episode || episode.finished || episode.seed !== state.seed) continue;
     logEvents(state, p.id, episode);
     const outcome = state.winner === p.id ? 1 : state.winner === null ? 0 : -1;
-    review(memory.brain, episode, outcome);
+    if (memory.learn) review(memory.brain, episode, outcome);
     episode.finished = true;
     memory.brain.gamesPlayed += 1;
   }
@@ -502,6 +573,7 @@ function episodeFor(memory: FlyMemory, state: GameState, player: PlayerId): FlyE
     turn: -1,
     fightsThisTurn: 0,
     territory: null,
+    sightings: [],
     seq: 0,
     choices: [],
     rewards: [],

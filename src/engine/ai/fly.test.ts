@@ -26,7 +26,7 @@ import { END_TURN_SCORE } from './scoring';
 
 /** Fly (seat 0) against a Normal CPU (seat 1), to the end. */
 function playFlyGame(seed: number, brain: FlyBrain): { state: GameState; memory: ReturnType<typeof createAiMemory> } {
-  const memory = createAiMemory({ flyBrain: brain });
+  const memory = createAiMemory({ flyBrain: brain, flyLearn: true });
   let s = createGame(
     {
       players: [
@@ -65,7 +65,7 @@ describe('fly: whole games', () => {
 
   it('learns nothing mid-match, only in the post-game review', () => {
     const brain = createFlyBrain();
-    const memory = createAiMemory({ flyBrain: brain });
+    const memory = createAiMemory({ flyBrain: brain, flyLearn: true });
     let s = createGame(
       {
         players: [
@@ -173,9 +173,9 @@ describe('fly: tags', () => {
 describe('fly: threats to held economy gardens', () => {
   /**
    * Fly holds a Mushroom at (2,1). `raiders` enemy gnomes stand within the
-   * threat radius of it; one more enemy stands far away at (5,5).
+   * threat radius of it; one more enemy stands far away, beside its own Home.
    */
-  function raided(raiders: number): { state: GameState; fly: PlayerId } {
+  function raided(raiders: number): { state: GameState; fly: PlayerId; far: Pos } {
     let s = toActionPhase(11);
     const fly = s.turn!.activePlayer;
     const enemy = (1 - fly) as PlayerId;
@@ -190,8 +190,13 @@ describe('fly: threats to held economy gardens', () => {
       { x: 1, y: 2 },
     ];
     for (const p of near.slice(0, raiders)) s = withGnome(s, enemy, p).state;
-    s = withGnome(s, enemy, { x: 5, y: 5 }).state;
-    return { state: s, fly };
+    // Beside the enemy's own Home, one step toward the center: far from
+    // anything of the fly's.
+    const eh = s.players[enemy].homePos;
+    const c = Math.floor(s.config.boardSize / 2);
+    const far = { x: eh.x + Math.sign(c - eh.x), y: eh.y + Math.sign(c - eh.y) };
+    s = withGnome(s, enemy, far).state;
+    return { state: s, fly, far };
   }
 
   const attack = (fly: PlayerId, to: Pos): Action => ({ type: 'move', player: fly, unitId: 'any', to });
@@ -203,12 +208,12 @@ describe('fly: threats to held economy gardens', () => {
   });
 
   it('wants to kill a raider near its garden more than a distant enemy', () => {
-    const { state, fly } = raided(2);
+    const { state, fly, far } = raided(2);
     const ctx = flyObserve(state, fly, createFlyMemory());
-    expect(flyTags(state, fly, attack(fly, { x: 3, y: 2 }))).toContain('defend');
-    expect(flyTags(state, fly, attack(fly, { x: 5, y: 5 }))).not.toContain('defend');
+    expect(flyTags(state, fly, attack(fly, { x: 3, y: 2 }), ctx.intent)).toContain('defend');
+    expect(flyTags(state, fly, attack(fly, far), ctx.intent)).not.toContain('defend');
     expect(flyBias(ctx, state, fly, attack(fly, { x: 3, y: 2 }))).toBeGreaterThan(
-      flyBias(ctx, state, fly, attack(fly, { x: 5, y: 5 })) + 2,
+      flyBias(ctx, state, fly, attack(fly, far)) + 2,
     );
   });
 

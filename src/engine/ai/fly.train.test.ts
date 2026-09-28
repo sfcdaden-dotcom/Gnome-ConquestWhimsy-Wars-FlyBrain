@@ -27,7 +27,7 @@ it.skipIf(!TRAIN)(
       const seed = 10001 + g;
       const flySeat = g % 2;
       const opponent: AiDifficulty = g % 4 < 2 ? 'normal' : 'hard';
-      const memory = createAiMemory({ flyBrain: brain });
+      const memory = createAiMemory({ flyBrain: brain, flyLearn: true });
       const players = [0, 1].map((i) => ({
         name: `P${i}`,
         controller: 'cpu' as const,

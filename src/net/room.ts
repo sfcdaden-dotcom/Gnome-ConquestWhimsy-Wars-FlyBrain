@@ -365,7 +365,7 @@ export class Room {
    * replaying its actions simply has CPU seats that re-read the board and pick
    * a fresh intention on their next turn.
    */
-  private readonly aiMemory = createAiMemory({ flyBrain: trainedFlyBrain() });
+  private readonly aiMemory = createAiMemory({ flyBrain: trainedFlyBrain(), flyLearn: true });
   /** Per-connection intake budgets, by connection id. Never persisted. */
   private readonly meters = new Map<string, Meter>();
   /**
