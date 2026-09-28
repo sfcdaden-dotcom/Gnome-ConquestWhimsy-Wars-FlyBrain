@@ -43,13 +43,14 @@
  */
 
 import type { Action, GameEvent, GameState, PlayerId, Pos } from '../types';
-import { enemyUnitsAt, gardenAt, manhattan, playerUnitsAt, posKey } from '../helpers';
+import { enemyUnitsAt, gardenAt, manhattan, playerUnitsAt, posKey, samePos } from '../helpers';
 import { END_TURN_SCORE, ownedEconomyGardens, primaryTarget } from './scoring';
-import { desperation, enemyGnomes, ownGnomes } from './util';
+import { desperation, enemyGnomes, ownGnomes, ownHomePos } from './util';
 import { TRAINED_FLY_BRAIN } from './trainedFlyBrain';
 import { TUNED_FLY_PARAMS } from './tunedFlyParams';
 import type { FlyIntent, OpponentProfiles, Sighting } from './flyIntent';
 import { FLY_INTENT, heldEconomyGardens, readIntent, recordHabits, snapshot } from './flyIntent';
+import { enemyReach, reachersOf } from './flyReach';
 
 // ---------------------------------------------------------------------------
 // Tuning — every knob that shapes the fly's personality
@@ -418,8 +419,38 @@ function defendDrive(state: GameState, player: PlayerId, pos: Pos, intent: FlyIn
   for (const u of enemyUnitsAt(state, pos, player)) {
     const hostile = intent.hostile.get(u.id) ?? 0;
     if (hostile >= FLY_INTENT.interceptAt) drive = Math.max(drive, hostile);
+    // One that can reach our Home next turn is the most urgent target there is.
+    if (intent.homeReachers.has(u.id)) drive = Math.max(drive, FLY_HOME_WATCH.interceptDrive);
   }
+  const home = ownHomePos(state, player);
+  if (home && samePos(pos, home)) drive = Math.max(drive, homeShortfall(state, player, intent));
   return drive;
+}
+
+/**
+ * The Home watch (flyReach.ts): what the fly does about enemy gnomes that could
+ * land on its Home next turn — by walking, or by slides, tunnels and chains.
+ */
+export const FLY_HOME_WATCH = {
+  /** Defend drive for attacking a gnome that can reach our Home next turn. */
+  interceptDrive: 1.5,
+};
+
+/** How many more gnomes could land on our Home next turn than defend it now. */
+export function homeShortfall(state: GameState, player: PlayerId, intent: FlyIntent, leaving = 0): number {
+  const home = ownHomePos(state, player);
+  if (!home) return 0;
+  const defenders = playerUnitsAt(state, home, player).filter((u) => u.kind === 'gnome').length - leaving;
+  return Math.max(0, intent.homeReachers.size - defenders);
+}
+
+/**
+ * Maize awareness: the Wishes it takes to walk back out of the Maize at `pos`
+ * (at its base cost — by next turn a freshly planted one is active), or 0.
+ */
+function maizeToll(state: GameState, pos: Pos): number {
+  const g = gardenAt(state, pos);
+  return g && g.type === 'maize' ? (g.upgraded ? 2 : 1) : 0;
 }
 
 /** Our Home, or an economy garden we hold. */
@@ -427,6 +458,11 @@ function isOwnAsset(state: GameState, player: PlayerId, pos: Pos): boolean {
   const g = gardenAt(state, pos);
   if (g?.type === 'home') return g.owner === player;
   return heldEconomyGardens(state, player).some((p) => p.x === pos.x && p.y === pos.y);
+}
+
+function stormsEnemyHome(state: GameState, player: PlayerId, pos: Pos): boolean {
+  const g = gardenAt(state, pos);
+  return !!g && g.type === 'home' && g.owner !== undefined && g.owner !== player;
 }
 
 /** Win probability of a move that starts a fight (gambler's ruin, 1 vs N). */
@@ -472,6 +508,8 @@ export function flyObserve(state: GameState, player: PlayerId, memory: FlyMemory
   }
 
   const intent = readIntent(state, player, episode.sightings, memory.opponents);
+  const home = ownHomePos(state, player);
+  if (home) intent.homeReachers = new Set(reachersOf(enemyReach(state, player), home));
   const drives = flyDrives(state, player);
   return { brain: memory.brain, episode, drives, situation: situationOf(drives), intent };
 }
@@ -512,6 +550,28 @@ function exposureAhead(state: GameState, player: PlayerId, action: Action, inten
  * that fails its bar drops below passing no matter how the bias pulled it.
  */
 export function flyBrake(ctx: FlyContext, state: GameState, player: PlayerId, action: Action, score: number): number {
+  if (action.type === 'move') {
+    const unit = state.units[action.unitId];
+    const home = ownHomePos(state, player);
+    const defending = defendDrive(state, player, action.to, ctx.intent) >= 1;
+    // Never strip the Home below what could land on it next turn.
+    if (
+      unit &&
+      home &&
+      samePos(unit.pos, home) &&
+      !samePos(action.to, home) &&
+      homeShortfall(state, player, ctx.intent, 1) > 0 &&
+      !stormsEnemyHome(state, player, action.to)
+    ) {
+      return Math.min(score, END_TURN_SCORE - 0.05);
+    }
+    // Don't walk into Maize we could not pay to leave (unless it defends).
+    const toll = unit && !samePos(unit.pos, action.to) ? maizeToll(state, action.to) : 0;
+    if (toll > 0) {
+      if (state.players[player].wishes < toll && !defending) return Math.min(score, END_TURN_SCORE - 0.05);
+      score -= toll; // the Wish it will cost to get out again
+    }
+  }
   const odds = fightOdds(state, player, action);
   if (odds === null) return score;
   const nth = Math.min(ctx.episode.fightsThisTurn, FLY_FIGHT_ODDS.length - 1);

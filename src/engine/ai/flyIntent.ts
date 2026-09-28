@@ -75,6 +75,11 @@ export interface FlyIntent {
   exposure: Map<PlayerId, number>;
   /** Confident reads this call — the raw material of a profile. */
   habits: Array<{ owner: PlayerId; kind: TargetKind }>;
+  /**
+   * Enemy gnomes that could land on the fly's Home next turn by any legal
+   * route — slides, tunnels, entry chains (filled from flyReach.ts).
+   */
+  homeReachers: Set<UnitId>;
 }
 
 /** The identity a profile is filed under: the opponent's seat name and kind. */
@@ -108,7 +113,13 @@ export function readIntent(
   profiles: OpponentProfiles,
 ): FlyIntent {
   const P = FLY_INTENT;
-  const intent: FlyIntent = { threat: new Map(), hostile: new Map(), exposure: new Map(), habits: [] };
+  const intent: FlyIntent = {
+    threat: new Map(),
+    hostile: new Map(),
+    exposure: new Map(),
+    habits: [],
+    homeReachers: new Set(),
+  };
 
   const assets: Array<{ kind: TargetKind; pos: Pos }> = [];
   const home = ownHomePos(state, player);

@@ -24,6 +24,14 @@ Since then: intent reading (`src/engine/ai/flyIntent.ts`) brought it to
 beat the hand-set settings on the held-out benchmark, so none are applied
 (see `tunedFlyParams.ts`).
 
+After a playtest where a human won with a Glacier slide onto the fly's Home
+and trapped its gnomes in Maize: the Home watch (`src/engine/ai/flyReach.ts`)
+works out every square each enemy gnome could reach next turn by any legal
+route (walk, harvest slides, tunnel hops, entry chains) and keeps enough
+defenders home, intercepts gnomes that can reach it, and spawns a defender
+from the Home harvest when short. The fly also no longer walks into Maize it
+cannot pay to leave. Benchmark: 87 vs Normal, 90 vs Hard.
+
 The first version went 47–151 vs Normal: its incentive pulls outbid actually
 marching on the enemy, and its learned values all inflated together. Smaller
 pulls, an `advance` pull, centered learning and the garden-threat alarm fixed

@@ -144,7 +144,7 @@ import { cardObjectiveMultiplier, homeIsStormed, objectiveBonus, objectiveField 
 import type { AiPersonality } from './personality';
 import { personalityFor } from './personality';
 import type { FlyContext } from './fly';
-import { flyBias, flyBrake, flyObserve, flyRecordChoice, isFly } from './fly';
+import { flyBias, flyBrake, flyObserve, flyRecordChoice, homeShortfall, isFly } from './fly';
 
 export { allUnitsMoved } from './util';
 export { createAiMemory, clearAiMemory, sharedAiMemory } from './memory';
@@ -241,6 +241,17 @@ function chooseAiActionInner(state: GameState, memory: AiMemory): Action {
     d === null || POSTURE_DECISIONS.has(d.kind)
       ? updatePlan(state, actor, plan, personality)
       : currentObjective(plan);
+
+  // The fly's Home watch: when more enemy gnomes could land on its Home next
+  // turn than stand guard, the Home harvest spawns a defender right there.
+  if (
+    fly &&
+    d?.kind === 'homeHarvest' &&
+    d.options.includes('gnome') &&
+    homeShortfall(state, actor, fly.intent) > 0
+  ) {
+    return { type: 'homeHarvest', player: actor, take: 'gnome' };
+  }
 
   if (d) {
     // A decision never needs the movement field, which is the expensive half —
