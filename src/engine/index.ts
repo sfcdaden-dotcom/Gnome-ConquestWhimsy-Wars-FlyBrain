@@ -172,6 +172,7 @@ export {
   flyDrives,
   flyRewardLog,
   parseFlyBrain,
+  trainedFlyBrain,
 } from './ai';
 export type {
   AiMemory,

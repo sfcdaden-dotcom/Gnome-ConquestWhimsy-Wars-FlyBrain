@@ -32,9 +32,15 @@ brake. Tuning lives in `FLY_REWARDS`, `FLY_PRIORITY` and `FLY_FIGHT_ODDS`.
   garden the fly holds raise alarm (`alarmAt` of them = full alarm). Alarm
   pulls it toward killing those raiders or reinforcing the garden, lowers the
   odds it needs for that fight, and such kills pay extra.
-- Learned values persist across games in the browser's localStorage
-  (`whimsy.flyBrain.v1`) — an intentional exception to DEPLOYMENT.md's
-  no-local-storage posture, for this fork.
+- Every fly starts from the brain shipped in
+  `src/engine/ai/trainedFlyBrain.ts` and keeps learning across the games in
+  one browser tab (or one online room). Nothing is stored on the device.
+- `npm run train:fly` regenerates the shipped brain by self-play
+  (`FLY_TRAIN_GAMES`, default 1000). The shipped brain is currently blank:
+  a 1000-game training run made the fly *weaker* (72 vs 91 of 200 against
+  Normal) because the learning rule credits immediate rewards and learns to
+  stop advancing. Fixing the learning signal is the next step before a
+  shared "hive" brain makes sense.
 
 ## What's here
 

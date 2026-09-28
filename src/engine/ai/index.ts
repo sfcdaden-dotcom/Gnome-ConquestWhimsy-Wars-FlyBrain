@@ -161,6 +161,7 @@ export {
   flyDrives,
   flyRewardLog,
   parseFlyBrain,
+  trainedFlyBrain,
 } from './fly';
 export type { FlyBrain, FlyDrives, FlyRewardEntry, FlyTag } from './fly';
 

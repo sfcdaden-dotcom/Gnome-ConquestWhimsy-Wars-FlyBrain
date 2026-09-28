@@ -21,7 +21,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Action, CreateGameOptions, GameState, PlayerId } from '../engine';
 import { applyAction, chooseAiAction, createAiMemory, createGame, finishFlyGames, getPlayerToAct } from '../engine';
-import { loadFlyBrain, saveFlyBrain } from './flyBrainStore';
+import { tabFlyBrain } from './flyBrainStore';
 import type { ChatBubble, FightPlayback, Toast, UnitPoof } from './sessionFx';
 import { addedEvents, useChatBubbles, useFightPlayback, useToasts } from './sessionFx';
 
@@ -176,17 +176,13 @@ export function useGame(options: CreateGameOptions, seed: number): GameSession {
   // from one turn to the next (see engine/ai/memory.ts). It holds no game truth:
   // losing it on a reload just means the CPU re-reads the board and picks a new
   // intention.
-  // Fly seats share one brain per device that outlives the game (flyBrainStore).
-  const aiMemory = useRef(createAiMemory({ flyBrain: loadFlyBrain() }));
-  const hasFly = state.players.some((p) => p.controller === 'cpu' && p.difficulty === 'fly');
+  // Fly seats share one brain per tab, which outlives the game (flyBrainStore).
+  const aiMemory = useRef(createAiMemory({ flyBrain: tabFlyBrain() }));
 
-  // Settle and save the fly's learning when the game ends; mid-game, save as it
-  // goes so an abandoned game still teaches it something.
+  // Settle the fly's learning from a finished game (a no-op without fly seats).
   useEffect(() => {
-    if (!hasFly) return;
     if (state.status === 'finished') finishFlyGames(state, aiMemory.current.fly);
-    saveFlyBrain();
-  }, [state, hasFly]);
+  }, [state]);
 
   useEffect(() => {
     if (state.status === 'finished') return;

@@ -54,6 +54,7 @@ import {
   applyAction,
   chooseAiAction,
   createAiMemory,
+  trainedFlyBrain,
   createGame,
   getPlayerToAct,
   getTimeoutAction,
@@ -363,7 +364,7 @@ export class Room {
    * replaying its actions simply has CPU seats that re-read the board and pick
    * a fresh intention on their next turn.
    */
-  private readonly aiMemory = createAiMemory();
+  private readonly aiMemory = createAiMemory({ flyBrain: trainedFlyBrain() });
   /** Per-connection intake budgets, by connection id. Never persisted. */
   private readonly meters = new Map<string, Meter>();
   /**

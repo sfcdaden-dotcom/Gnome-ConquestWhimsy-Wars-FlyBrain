@@ -22,8 +22,11 @@
  * the fly's next call), every traced value moves toward the reward. Traces
  * decay per decision, so credit goes mostly to recent choices.
  *
- * The learned values live in a `FlyBrain` — plain JSON, meant to be kept by the
- * host across games (the UI saves it to localStorage). Per-game bookkeeping
+ * The learned values live in a `FlyBrain` — plain JSON. Every fly starts from
+ * the brain shipped in `trainedFlyBrain.ts` (trained offline by self-play, see
+ * fly.train.test.ts) and keeps learning for as long as its host keeps the
+ * brain: a browser tab, or an online room. Nothing is stored on the device.
+ * Per-game bookkeeping
  * (traces, fights this turn, the reward log) lives in a `FlyEpisode` inside the
  * caller's `AiMemory` and is discarded with the game.
  *
@@ -36,6 +39,7 @@ import type { Action, GameEvent, GameState, PlayerId, Pos } from '../types';
 import { enemyUnitsAt, gardenAt, manhattan, playerUnitsAt } from '../helpers';
 import { END_TURN_SCORE, ownedEconomyGardens, primaryTarget } from './scoring';
 import { desperation, enemyGnomes, ownGnomes } from './util';
+import { TRAINED_FLY_BRAIN } from './trainedFlyBrain';
 
 // ---------------------------------------------------------------------------
 // Tuning — every knob that shapes the fly's personality
@@ -198,8 +202,14 @@ export interface FlyContext {
 // Brain lifecycle
 // ---------------------------------------------------------------------------
 
+/** A blank brain: no experience at all. */
 export function createFlyBrain(): FlyBrain {
   return { version: 1, gamesPlayed: 0, values: {} };
+}
+
+/** A private copy of the shipped, pre-trained brain (see fly.train.test.ts). */
+export function trainedFlyBrain(): FlyBrain {
+  return structuredClone(TRAINED_FLY_BRAIN);
 }
 
 export function createFlyMemory(brain: FlyBrain = createFlyBrain()): FlyMemory {
