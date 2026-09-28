@@ -16,19 +16,26 @@
  *                 certain ones, and every bar rises as reinforcements run out
  *                 (`flyBrake`)
  *
- * LEARNING. A crude stand-in for the mushroom body: the fly keeps one value per
- * (situation, tag). When it acts, the tags of the chosen action get an
- * eligibility trace; when rewards arrive (read from the engine's event log on
- * the fly's next call), every traced value moves toward the reward. Traces
- * decay per decision, so credit goes mostly to recent choices.
+ * LEARNING happens AFTER the match, never during it. While playing, the brain
+ * is frozen and the fly only keeps two logs: each choice it made (situation +
+ * tags) and each reward that followed (read from the engine's event log). When
+ * the game ends, `finishFlyGames` reviews them: every choice is credited with
+ * the game's result in full, plus the later rewards discounted by how many
+ * turns after the choice they came. The brain keeps a running average of that
+ * credit per (situation, tag), and play leans toward the tags whose average
+ * beats the other tags available in the same situation.
+ *
+ * Why after the match: learning live with short-lived traces credited only
+ * what paid off immediately (planting, harvests, draws) and taught the fly to
+ * stop advancing, because a captured Home pays out many moves later.
  *
  * The learned values live in a `FlyBrain` — plain JSON. Every fly starts from
  * the brain shipped in `trainedFlyBrain.ts` (trained offline by self-play, see
  * fly.train.test.ts) and keeps learning for as long as its host keeps the
  * brain: a browser tab, or an online room. Nothing is stored on the device.
  * Per-game bookkeeping
- * (traces, fights this turn, the reward log) lives in a `FlyEpisode` inside the
- * caller's `AiMemory` and is discarded with the game.
+ * (the two logs, fights this turn) lives in a `FlyEpisode` inside the caller's
+ * `AiMemory` and is discarded with the game.
  *
  * NOT DETERMINISTIC ACROSS GAMES by design: the same seed played by a fly with
  * a different brain plays differently. Within one game, given the same brain
@@ -71,8 +78,6 @@ export const FLY_REWARDS = {
   /** Per fight started beyond the first in one of the fly's own turns. */
   extraFight: -2,
   opponentEliminated: 4,
-  eliminated: -10,
-  won: 15,
 } as const;
 
 /**
@@ -111,10 +116,19 @@ export const FLY_THREAT = {
 /** Minimum win probability to take the Nth fight of a turn (index 0 = first). */
 export const FLY_FIGHT_ODDS = [0.4, 0.62, 0.85] as const;
 
-const LEARNING_RATE = 0.05;
-const TRACE_DECAY = 0.85;
-const VALUE_LIMIT = 3;
-const REWARD_LOG_LIMIT = 100;
+/** How the post-game review turns the logs into learning. */
+export const FLY_REVIEW = {
+  /** The result, credited in full to every choice: + for a win, − for a loss. */
+  outcomeWeight: 10,
+  /** Per-turn discount on a reward's credit to the choices made before it. */
+  discount: 0.9,
+  /** Step size of each tag's running average of credit. */
+  learningRate: 0.02,
+  /** Score points per point of credit a tag beats its situation's average by. */
+  influence: 0.3,
+  /** Cap on the learned pull either way, so the hand-set priorities stay in charge. */
+  maxPull: 2,
+};
 
 // ---------------------------------------------------------------------------
 // Types
@@ -146,9 +160,10 @@ const TAGS: readonly FlyTag[] = [
 
 /** The persistent, learned half of the fly. Plain JSON; keep it across games. */
 export interface FlyBrain {
-  version: 1;
+  /** 2: values are post-game credit averages (1 was live-trace learning). */
+  version: 2;
   gamesPlayed: number;
-  /** Learned value per `${situation}:${tag}`; absent = 0. */
+  /** Average credit per `${situation}:${tag}`; absent = never reviewed. */
   values: Record<string, number>;
 }
 
@@ -179,8 +194,10 @@ interface FlyEpisode {
   fightsThisTurn: number;
   /** Gardens held at the start of the fly's last turn (null before the first). */
   territory: number | null;
-  traces: Map<string, number>;
-  log: FlyRewardEntry[];
+  /** Orders choices and rewards, so a reward credits only earlier choices. */
+  seq: number;
+  choices: Array<{ seq: number; turn: number; keys: string[] }>;
+  rewards: Array<FlyRewardEntry & { seq: number }>;
   finished: boolean;
 }
 
@@ -204,7 +221,7 @@ export interface FlyContext {
 
 /** A blank brain: no experience at all. */
 export function createFlyBrain(): FlyBrain {
-  return { version: 1, gamesPlayed: 0, values: {} };
+  return { version: 2, gamesPlayed: 0, values: {} };
 }
 
 /** A private copy of the shipped, pre-trained brain (see fly.train.test.ts). */
@@ -222,14 +239,14 @@ export function parseFlyBrain(json: string): FlyBrain | null {
     const raw: unknown = JSON.parse(json);
     if (typeof raw !== 'object' || raw === null) return null;
     const r = raw as Partial<FlyBrain>;
-    if (r.version !== 1 || typeof r.gamesPlayed !== 'number' || typeof r.values !== 'object' || r.values === null) {
+    if (r.version !== 2 || typeof r.gamesPlayed !== 'number' || typeof r.values !== 'object' || r.values === null) {
       return null;
     }
     const values: Record<string, number> = {};
     for (const [k, v] of Object.entries(r.values)) {
-      if (typeof v === 'number' && Number.isFinite(v)) values[k] = clamp(v, -VALUE_LIMIT, VALUE_LIMIT);
+      if (typeof v === 'number' && Number.isFinite(v)) values[k] = v;
     }
-    return { version: 1, gamesPlayed: r.gamesPlayed, values };
+    return { version: 2, gamesPlayed: r.gamesPlayed, values };
   } catch {
     return null;
   }
@@ -373,12 +390,13 @@ function fightOdds(state: GameState, player: PlayerId, action: Action): number |
 // ---------------------------------------------------------------------------
 
 /**
- * Start of every decision for a fly seat: pick up this game's episode, learn
- * from everything that happened since the last call, and read the drives.
+ * Start of every decision for a fly seat: pick up this game's episode, log the
+ * rewards in everything that happened since the last call, and read the drives.
+ * Nothing is learned here — the brain is frozen until the post-game review.
  */
 export function flyObserve(state: GameState, player: PlayerId, memory: FlyMemory): FlyContext {
   const episode = episodeFor(memory, state, player);
-  learnFromEvents(state, player, memory.brain, episode);
+  logEvents(state, player, episode);
 
   // New own turn: territory reward for what the last turn gained or lost, and
   // a fresh fight budget.
@@ -389,7 +407,7 @@ export function flyObserve(state: GameState, player: PlayerId, memory: FlyMemory
     const held = territoryHeld(state, player);
     if (episode.territory !== null && held !== episode.territory) {
       const delta = held - episode.territory;
-      reward(memory.brain, episode, turn.number, delta * FLY_REWARDS.territoryPerGarden,
+      logReward(episode, turn.number, delta * FLY_REWARDS.territoryPerGarden,
         `${delta > 0 ? 'gained' : 'lost'} ${Math.abs(delta)} garden${Math.abs(delta) === 1 ? '' : 's'}`);
     }
     episode.territory = held;
@@ -439,15 +457,18 @@ export function flyBrake(ctx: FlyContext, state: GameState, player: PlayerId, ac
   return score - (1 - odds) * 2 * ctx.drives.fear;
 }
 
-/** Mark the chosen action's tags as eligible for the rewards that follow. */
+/** Log a choice the fly actually made, for the post-game review. */
 export function flyRecordChoice(ctx: FlyContext, state: GameState, player: PlayerId, action: Action): void {
-  for (const tag of flyTags(state, player, action)) ctx.episode.traces.set(`${ctx.situation}:${tag}`, 1);
+  const keys = flyTags(state, player, action).map((tag) => `${ctx.situation}:${tag}`);
+  if (keys.length === 0) return;
+  const ep = ctx.episode;
+  ep.choices.push({ seq: ep.seq++, turn: state.turn?.number ?? 0, keys });
 }
 
 /**
- * Settle a finished game for every fly seat: learn from the final events (the
- * win or elimination) and count the game. Idempotent per game. Hosts call it
- * once the game ends, then persist the brain.
+ * The post-game review, for every fly seat in a finished game: log the final
+ * events, then learn from the whole game at once. Idempotent per game. Hosts
+ * call it once the game ends.
  */
 export function finishFlyGames(state: GameState, memory: FlyMemory): void {
   if (state.status !== 'finished') return;
@@ -455,15 +476,17 @@ export function finishFlyGames(state: GameState, memory: FlyMemory): void {
     if (p.difficulty !== 'fly') continue;
     const episode = memory.episodes.get(p.id);
     if (!episode || episode.finished || episode.seed !== state.seed) continue;
-    learnFromEvents(state, p.id, memory.brain, episode);
+    logEvents(state, p.id, episode);
+    const outcome = state.winner === p.id ? 1 : state.winner === null ? 0 : -1;
+    review(memory.brain, episode, outcome);
     episode.finished = true;
     memory.brain.gamesPlayed += 1;
   }
 }
 
-/** The fly's recent rewards, newest last — for a debug panel or a test. */
+/** Everything the fly was rewarded or punished for this game, oldest first. */
 export function flyRewardLog(memory: FlyMemory, player: PlayerId): readonly FlyRewardEntry[] {
-  return memory.episodes.get(player)?.log ?? [];
+  return memory.episodes.get(player)?.rewards ?? [];
 }
 
 // ---------------------------------------------------------------------------
@@ -479,8 +502,9 @@ function episodeFor(memory: FlyMemory, state: GameState, player: PlayerId): FlyE
     turn: -1,
     fightsThisTurn: 0,
     territory: null,
-    traces: new Map(),
-    log: [],
+    seq: 0,
+    choices: [],
+    rewards: [],
     finished: false,
   };
   memory.episodes.set(player, fresh);
@@ -494,9 +518,19 @@ function episodeFor(memory: FlyMemory, state: GameState, player: PlayerId): FlyE
  * my other options", which is the part that should change behaviour.
  */
 function learned(ctx: FlyContext, tag: FlyTag): number {
+  const mine = ctx.brain.values[`${ctx.situation}:${tag}`];
+  if (mine === undefined) return 0; // never tried here: no opinion
   let sum = 0;
-  for (const t of TAGS) sum += ctx.brain.values[`${ctx.situation}:${t}`] ?? 0;
-  return (ctx.brain.values[`${ctx.situation}:${tag}`] ?? 0) - sum / TAGS.length;
+  let n = 0;
+  for (const t of TAGS) {
+    const v = ctx.brain.values[`${ctx.situation}:${t}`];
+    if (v !== undefined) {
+      sum += v;
+      n += 1;
+    }
+  }
+  const pull = (mine - sum / n) * FLY_REVIEW.influence;
+  return clamp(pull, -FLY_REVIEW.maxPull, FLY_REVIEW.maxPull);
 }
 
 /** Non-home gardens where we have a gnome and the enemy has nothing. */
@@ -524,28 +558,36 @@ function newEvents(state: GameState, episode: FlyEpisode): readonly GameEvent[] 
   return state.events.slice(Math.max(0, state.events.length - fresh));
 }
 
-function learnFromEvents(state: GameState, player: PlayerId, brain: FlyBrain, episode: FlyEpisode): void {
+function logEvents(state: GameState, player: PlayerId, episode: FlyEpisode): void {
   const turn = state.turn?.number ?? 0;
   for (const ev of newEvents(state, episode)) {
     const r = rewardFor(state, player, episode, ev);
-    if (r) reward(brain, episode, turn, r.amount, r.reason);
-  }
-  // Older choices earn less credit for whatever comes next.
-  for (const [k, t] of episode.traces) {
-    const next = t * TRACE_DECAY;
-    if (next < 0.05) episode.traces.delete(k);
-    else episode.traces.set(k, next);
+    if (r) logReward(episode, turn, r.amount, r.reason);
   }
 }
 
-function reward(brain: FlyBrain, episode: FlyEpisode, turn: number, amount: number, reason: string): void {
+function logReward(episode: FlyEpisode, turn: number, amount: number, reason: string): void {
   if (amount === 0) return;
-  for (const [k, t] of episode.traces) {
-    const v = (brain.values[k] ?? 0) + LEARNING_RATE * amount * t;
-    brain.values[k] = clamp(v, -VALUE_LIMIT, VALUE_LIMIT);
+  episode.rewards.push({ seq: episode.seq++, turn, reason, amount: Math.round(amount * 100) / 100 });
+}
+
+/**
+ * Learn from one finished game. Each choice's credit is the result in full
+ * plus every later reward, discounted per turn of delay; each (situation, tag)
+ * the choice touched moves its running average toward that credit.
+ */
+function review(brain: FlyBrain, episode: FlyEpisode, outcome: number): void {
+  const { discount, learningRate, outcomeWeight } = FLY_REVIEW;
+  for (const choice of episode.choices) {
+    let credit = outcome * outcomeWeight;
+    for (const r of episode.rewards) {
+      if (r.seq > choice.seq) credit += r.amount * discount ** Math.max(0, r.turn - choice.turn);
+    }
+    for (const key of choice.keys) {
+      const v = brain.values[key] ?? 0;
+      brain.values[key] = v + learningRate * (credit - v);
+    }
   }
-  episode.log.push({ turn, reason, amount: Math.round(amount * 100) / 100 });
-  if (episode.log.length > REWARD_LOG_LIMIT) episode.log.shift();
 }
 
 function rewardFor(
@@ -598,11 +640,8 @@ function rewardFor(
         : null;
     }
     case 'playerEliminated':
-      return ev.player === player
-        ? { amount: R.eliminated, reason: 'eliminated' }
-        : { amount: R.opponentEliminated, reason: 'an opponent fell' };
-    case 'gameFinished':
-      return ev.winner === player ? { amount: R.won, reason: 'won the game' } : null;
+      // Our own fall is the game's result, which the review credits separately.
+      return ev.player === player ? null : { amount: R.opponentEliminated, reason: 'an opponent fell' };
     default:
       return null;
   }

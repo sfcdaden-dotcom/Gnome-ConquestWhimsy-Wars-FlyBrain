@@ -55,7 +55,7 @@ it.skipIf(!TRAIN)(
 
 import type { FlyBrain } from './fly';
 
-export const TRAINED_FLY_BRAIN: FlyBrain = ${JSON.stringify({ version: 1, gamesPlayed: brain.gamesPlayed, values }, null, 2)};
+export const TRAINED_FLY_BRAIN: FlyBrain = ${JSON.stringify({ version: 2, gamesPlayed: brain.gamesPlayed, values }, null, 2)};
 `,
     );
     console.log(`fly won ${wins}/${GAMES} while training; wrote ${out}`);

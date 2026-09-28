@@ -63,6 +63,27 @@ describe('fly: whole games', () => {
     expect(brain.values).not.toEqual(afterOne);
   });
 
+  it('learns nothing mid-match, only in the post-game review', () => {
+    const brain = createFlyBrain();
+    const memory = createAiMemory({ flyBrain: brain });
+    let s = createGame(
+      {
+        players: [
+          { name: 'Fly', controller: 'cpu', difficulty: 'fly' },
+          { name: 'Steady', controller: 'cpu', difficulty: 'normal' },
+        ],
+        gardenPreset: 'random',
+      },
+      5,
+    );
+    for (let i = 0; i < 6000 && !isGameOver(s); i++) s = applyAction(s, chooseAiAction(s, memory));
+    expect(s.status).toBe('finished');
+    expect(brain.values).toEqual({});
+    expect(flyRewardLog(memory.fly, 0).length).toBeGreaterThan(0);
+    finishFlyGames(s, memory.fly);
+    expect(Object.keys(brain.values).length).toBeGreaterThan(0);
+  });
+
   it('counts a finished game only once', () => {
     const brain = createFlyBrain();
     const { state, memory } = playFlyGame(4, brain);
@@ -73,14 +94,15 @@ describe('fly: whole games', () => {
 
 describe('fly: brain file', () => {
   it('round-trips through JSON', () => {
-    const brain: FlyBrain = { version: 1, gamesPlayed: 5, values: { 'calm:territory': 1.25 } };
+    const brain: FlyBrain = { version: 2, gamesPlayed: 5, values: { 'calm:territory': 1.25 } };
     expect(parseFlyBrain(JSON.stringify(brain))).toEqual(brain);
   });
 
-  it('rejects anything that is not a brain, and clamps wild values', () => {
+  it('rejects anything that is not a current brain', () => {
     expect(parseFlyBrain('nope')).toBeNull();
-    expect(parseFlyBrain('{"version":2,"gamesPlayed":0,"values":{}}')).toBeNull();
-    expect(parseFlyBrain('{"version":1,"gamesPlayed":0,"values":{"calm:fight":999}}')?.values['calm:fight']).toBe(3);
+    // Version 1 brains learned live, and their values mean something else.
+    expect(parseFlyBrain('{"version":1,"gamesPlayed":0,"values":{}}')).toBeNull();
+    expect(parseFlyBrain('{"version":2,"gamesPlayed":0,"values":{"calm:fight":"x"}}')?.values).toEqual({});
   });
 });
 

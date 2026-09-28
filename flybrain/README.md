@@ -8,13 +8,16 @@ hand-written drives plus a learned reward memory — `src/engine/ai/fly.ts`. The
 connectome in this folder loads and runs but is not wired in yet; it will
 replace `flyDrives()`.
 
-Benchmark (200 games each, sides alternating, one brain learning throughout):
+Benchmark (200 games each, seeds 1–200, sides alternating), with the shipped
+blank brain and no learning:
 
 | Matchup | Fly | CPU | Draws |
 |---|---|---|---|
-| Fly vs Normal | 91 | 109 | 0 |
-| Fly vs Hard | 70 | 128 | 2 |
+| Fly vs Normal | 86 | 114 | 0 |
+| Fly vs Hard | 78 | 121 | 1 |
 | Normal vs Normal (baseline) | 93 | 107 | 0 |
+
+Run-to-run noise at 200 games is about ±7 wins.
 
 The first version went 47–151 vs Normal: its incentive pulls outbid actually
 marching on the enemy, and its learned values all inflated together. Smaller
@@ -35,12 +38,17 @@ brake. Tuning lives in `FLY_REWARDS`, `FLY_PRIORITY` and `FLY_FIGHT_ODDS`.
 - Every fly starts from the brain shipped in
   `src/engine/ai/trainedFlyBrain.ts` and keeps learning across the games in
   one browser tab (or one online room). Nothing is stored on the device.
+- The fly learns only AFTER a match: during play its brain is frozen and it
+  logs its choices and the rewards that followed; the post-game review
+  credits every choice with the result plus the later rewards, discounted
+  per turn (`FLY_REVIEW`).
 - `npm run train:fly` regenerates the shipped brain by self-play
-  (`FLY_TRAIN_GAMES`, default 1000). The shipped brain is currently blank:
-  a 1000-game training run made the fly *weaker* (72 vs 91 of 200 against
-  Normal) because the learning rule credits immediate rewards and learns to
-  stop advancing. Fixing the learning signal is the next step before a
-  shared "hive" brain makes sense.
+  (`FLY_TRAIN_GAMES`, default 1000). The shipped brain is currently blank,
+  because learning has not yet helped: on the benchmark against Normal a
+  fly that never learns wins 86 of 200, while a review-trained brain wins 67.
+  Per-action credit is confounded (choices made in winning positions look
+  good whether or not they caused the win), so the next idea is to tune the
+  handful of incentive weights directly by win rate instead.
 
 ## What's here
 

@@ -290,10 +290,13 @@ function chooseAiActionInner(state: GameState, memory: AiMemory): Action {
   }
 
   const action = pickAction(state, actor, scored, personality) ?? legal[0];
-  if (fly) flyRecordChoice(fly, state, actor, action);
   // Say the plan before playing it, when there is a new one to say (chat costs
   // the turn nothing; the action below follows on the next call).
-  return idleChatter(state, actor, legal, action, plan) ?? action;
+  const chat = idleChatter(state, actor, legal, action, plan);
+  if (chat) return chat;
+  // Logged only once actually played, not when chat deferred it to next call.
+  if (fly) flyRecordChoice(fly, state, actor, action);
+  return action;
 }
 
 /**

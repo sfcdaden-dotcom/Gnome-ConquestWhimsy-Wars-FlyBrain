@@ -54,6 +54,7 @@ import {
   applyAction,
   chooseAiAction,
   createAiMemory,
+  finishFlyGames,
   trainedFlyBrain,
   createGame,
   getPlayerToAct,
@@ -1111,6 +1112,8 @@ export class Room {
     this.data.actions.push(action);
     if (isGameOver(next)) this.data.phase = 'finished';
     const justFinished = !wasFinished && this.data.phase === 'finished';
+    // A fly seat's post-game review. The brain lives only as long as this room.
+    if (justFinished) finishFlyGames(next, this.aiMemory.fly);
 
     // Quick chat is the one action that must NOT buy time: it is sendable out
     // of turn and after the game ends, so letting it restart the clock would
