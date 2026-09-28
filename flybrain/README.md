@@ -3,7 +3,25 @@
 An experiment: a CPU player for Gnome Conquest driven by a simulated fruit fly
 brain. One fly per player; the gnomes are its limbs.
 
-**Status:** the brain loads and runs. It is not wired into the game yet.
+**Status:** a playable `Fly` CPU (pick it as a seat's difficulty) runs on
+hand-written drives plus a learned reward memory — `src/engine/ai/fly.ts`. The
+connectome in this folder loads and runs but is not wired in yet; it will
+replace `flyDrives()`.
+
+Benchmark (200 games each, sides alternating, one brain learning throughout):
+Fly 47–151 vs Normal (2 draws), Fly 57–142 vs Hard (1 draw); Normal vs Normal
+is 93–107. It is currently weak and not yet improving with experience.
+
+### Incentives
+
+Priority: territory > planting > harvest > card interaction, with risk as a
+brake. Tuning lives in `FLY_REWARDS`, `FLY_PRIORITY` and `FLY_FIGHT_ODDS`.
+
+- One fight per turn at fair odds is fine; a 2nd needs ~62%, a 3rd ~85%.
+- Every bar rises as reinforcements run out, and lost gnomes cost more.
+- Learned values persist across games in the browser's localStorage
+  (`whimsy.flyBrain.v1`) — an intentional exception to DEPLOYMENT.md's
+  no-local-storage posture, for this fork.
 
 ## What's here
 

@@ -163,8 +163,28 @@ export {
   sharedAiMemory,
   PERSONALITIES,
   personalityFor,
+  // The experimental 'fly' seat (ai/fly.ts).
+  FLY_FIGHT_ODDS,
+  FLY_PRIORITY,
+  FLY_REWARDS,
+  createFlyBrain,
+  finishFlyGames,
+  flyDrives,
+  flyRewardLog,
+  parseFlyBrain,
 } from './ai';
-export type { AiMemory, AiPersonality, AiPlan, Objective, ObjectiveKind, StrategicState } from './ai';
+export type {
+  AiMemory,
+  AiPersonality,
+  AiPlan,
+  FlyBrain,
+  FlyDrives,
+  FlyRewardEntry,
+  FlyTag,
+  Objective,
+  ObjectiveKind,
+  StrategicState,
+} from './ai';
 
 // Self-play match recorder (training-data generation).
 export {
