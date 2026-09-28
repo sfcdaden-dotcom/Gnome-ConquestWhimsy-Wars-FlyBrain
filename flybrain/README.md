@@ -19,6 +19,11 @@ blank brain and no learning:
 
 Run-to-run noise at 200 games is about ±7 wins.
 
+Since then: intent reading (`src/engine/ai/flyIntent.ts`) brought it to
+85 vs Normal and 84 vs Hard. A win-rate tune (`npm run tune:fly`) did not
+beat the hand-set settings on the held-out benchmark, so none are applied
+(see `tunedFlyParams.ts`).
+
 The first version went 47–151 vs Normal: its incentive pulls outbid actually
 marching on the enemy, and its learned values all inflated together. Smaller
 pulls, an `advance` pull, centered learning and the garden-threat alarm fixed

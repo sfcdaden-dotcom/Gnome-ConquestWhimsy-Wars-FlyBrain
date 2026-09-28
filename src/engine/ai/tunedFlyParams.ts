@@ -3,8 +3,11 @@
  * `npm run tune:fly` (scripts/tune-fly.mjs); do not edit by hand. `null` =
  * use the hand-set defaults in fly.ts and flyIntent.ts.
  *
- * On the tuning pool (200 games vs Normal/Hard) these won 83; the
- * hand-set defaults won 78.
+ * Currently null on purpose. A 16-round tune reached 90 of 200 on its own
+ * pool (defaults 78), but on the held-out benchmark (seeds 1–200) the tuned
+ * settings won 83 vs Normal and 83 vs Hard against the defaults' 85 and 84:
+ * the gain was selection noise (adopting the best of four noisy scores each
+ * round). Re-checking each adopted candidate on fresh games would fix that.
  */
 
 import type { FlyTag } from './fly';
@@ -16,32 +19,4 @@ export interface TunedFlyParams {
   intent?: Record<string, number>;
 }
 
-export const TUNED_FLY_PARAMS: TunedFlyParams | null = {
-  "priority": {
-    "territory": 1.5,
-    "plant": 1.25,
-    "harvest": 1,
-    "card": 0.6,
-    "draw": 0.3,
-    "fight": 0.75,
-    "advance": 1.5,
-    "defend": 3.5
-  },
-  "fightOdds": [
-    0.4,
-    0.62,
-    0.85
-  ],
-  "threat": {
-    "radius": 2,
-    "alarmAt": 2,
-    "oddsRelief": 0.1
-  },
-  "intent": {
-    "anticipateAt": 0.6,
-    "interceptAt": 0.5,
-    "counterattack": 1.5,
-    "progressWeight": 1.5,
-    "distanceWeight": 0.35
-  }
-};
+export const TUNED_FLY_PARAMS: TunedFlyParams | null = null;
