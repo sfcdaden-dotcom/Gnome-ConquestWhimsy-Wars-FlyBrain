@@ -6,7 +6,7 @@
  * action still gets its tactical + objective score; the fly then adds three
  * things, each in one place:
  *
- *   drives        hunger / aggression / fear, read off the board each call
+ *   drives        hunger / aggression / fear / alarm, read off the board
  *        ↓        (`flyDrives` — the function a connectome simulation replaces)
  *   bias          per-tag pull: territory > planting > harvest > cards, scaled
  *        ↓        by the drives, plus whatever the fly has LEARNED about that
@@ -32,9 +32,9 @@
  * and memory, it is still a pure function of the state (no Math.random).
  */
 
-import type { Action, GameEvent, GameState, PlayerId } from '../types';
-import { enemyUnitsAt, gardenAt, playerUnitsAt } from '../helpers';
-import { END_TURN_SCORE, ownedEconomyGardens } from './scoring';
+import type { Action, GameEvent, GameState, PlayerId, Pos } from '../types';
+import { enemyUnitsAt, gardenAt, manhattan, playerUnitsAt } from '../helpers';
+import { END_TURN_SCORE, ownedEconomyGardens, primaryTarget } from './scoring';
 import { desperation, enemyGnomes, ownGnomes } from './util';
 
 // ---------------------------------------------------------------------------
@@ -60,6 +60,8 @@ export const FLY_REWARDS = {
   /** Fizzled, cancelled, or discarded unplayed. */
   cardWasted: -1,
   enemyGnomeDestroyed: 2,
+  /** Instead of `enemyGnomeDestroyed`, for a kill near a garden we hold. */
+  threatKilled: 4,
   /** Multiplied by `scarcity` — a gnome hurts more when few remain. */
   ownGnomeLost: -3,
   /** Per fight started beyond the first in one of the fly's own turns. */
@@ -69,16 +71,37 @@ export const FLY_REWARDS = {
   won: 15,
 } as const;
 
-/** Standing pull toward each tag before drives and learning. */
+/**
+ * Standing pull toward each tag before drives and learning, in Action-Phase
+ * score points. Kept small on purpose: these tip close calls between sound
+ * actions. At twice these values the fly neglected its attack and lost 3:1 to
+ * Normal. `advance` (a step toward the enemy Home) needs a pull of its own, or
+ * every side errand outbids actually marching.
+ */
 export const FLY_PRIORITY: Record<FlyTag, number> = {
-  territory: 3,
-  plant: 2.5,
-  harvest: 2,
-  card: 1.2,
-  draw: 0.6,
-  fight: 1.5,
-  advance: 0,
+  territory: 1.5,
+  plant: 1.25,
+  harvest: 1,
+  card: 0.6,
+  draw: 0.3,
+  fight: 0.75,
+  advance: 1.5,
+  defend: 3,
   pass: 0,
+};
+
+/**
+ * Threat to our economy: enemy gnomes near a Dandelion / Mushroom / Maize we
+ * hold. `alarmAt` enemies within `radius` of one garden rings the alarm (local
+ * alarm 1.0); fewer is a proportional unease, more is louder. Alarm pulls the
+ * fly toward killing those gnomes or reinforcing the garden (`defend`), and
+ * lets it accept worse odds for that fight than for an attack elsewhere.
+ */
+export const FLY_THREAT = {
+  radius: 2,
+  alarmAt: 2,
+  /** Win-probability bar reduction per unit of local alarm (alarm capped at 2). */
+  oddsRelief: 0.1,
 };
 
 /** Minimum win probability to take the Nth fight of a turn (index 0 = first). */
@@ -94,7 +117,28 @@ const REWARD_LOG_LIMIT = 100;
 // ---------------------------------------------------------------------------
 
 /** What kind of thing an action is, as far as the fly's incentives care. */
-export type FlyTag = 'territory' | 'plant' | 'harvest' | 'card' | 'draw' | 'fight' | 'advance' | 'pass';
+export type FlyTag =
+  | 'territory'
+  | 'plant'
+  | 'harvest'
+  | 'card'
+  | 'draw'
+  | 'fight'
+  | 'advance'
+  | 'defend'
+  | 'pass';
+
+const TAGS: readonly FlyTag[] = [
+  'territory',
+  'plant',
+  'harvest',
+  'card',
+  'draw',
+  'fight',
+  'advance',
+  'defend',
+  'pass',
+];
 
 /** The persistent, learned half of the fly. Plain JSON; keep it across games. */
 export interface FlyBrain {
@@ -112,6 +156,8 @@ export interface FlyDrives {
   aggression: number;
   /** 1–4: how scarce our remaining reinforcements are. */
   fear: number;
+  /** 0+: the loudest local alarm over our held economy gardens (1 = alarm). */
+  alarm: number;
 }
 
 export interface FlyRewardEntry {
@@ -212,7 +258,45 @@ export function flyDrives(state: GameState, player: PlayerId): FlyDrives {
   const strongest = Math.max(1, ...counts.values());
   const aggression = clamp(ours / strongest, 0.5, 2);
 
-  return { hunger, aggression, fear: scarcity(state, player) };
+  let alarm = 0;
+  for (const g of threatenedGardens(state, player)) alarm = Math.max(alarm, g.alarm);
+
+  return { hunger, aggression, fear: scarcity(state, player), alarm };
+}
+
+/** Economy gardens we hold (our gnome on it), with their local alarm. */
+export function threatenedGardens(state: GameState, player: PlayerId): Array<{ pos: Pos; alarm: number }> {
+  const enemies = enemyGnomes(state, player);
+  const out: Array<{ pos: Pos; alarm: number }> = [];
+  for (const pos of heldEconomyGardens(state, player)) {
+    const near = enemies.filter((u) => manhattan(u.pos, pos) <= FLY_THREAT.radius).length;
+    if (near > 0) out.push({ pos, alarm: near / FLY_THREAT.alarmAt });
+  }
+  return out;
+}
+
+function heldEconomyGardens(state: GameState, player: PlayerId): Pos[] {
+  const out: Pos[] = [];
+  for (const [key, g] of Object.entries(state.gardens)) {
+    if (g.type !== 'dandelion' && g.type !== 'mushroom' && g.type !== 'maize') continue;
+    const [x, y] = key.split(',').map(Number);
+    const pos = { x, y };
+    if (playerUnitsAt(state, pos, player).some((u) => u.kind === 'gnome')) out.push(pos);
+  }
+  return out;
+}
+
+/**
+ * How alarming it is to act on `pos`: the loudest alarm among threatened held
+ * gardens within the threat radius of it. 0 when `pos` is nowhere near one —
+ * which is what makes a nearby raider worth more than a distant one.
+ */
+function localAlarm(state: GameState, player: PlayerId, pos: Pos): number {
+  let alarm = 0;
+  for (const g of threatenedGardens(state, player)) {
+    if (manhattan(g.pos, pos) <= FLY_THREAT.radius) alarm = Math.max(alarm, g.alarm);
+  }
+  return alarm;
 }
 
 /** A coarse situation key, so learning is conditional: "hungry+scarce" etc. */
@@ -221,6 +305,7 @@ function situationOf(drives: FlyDrives): string {
   if (drives.hunger > 1) bits.push('hungry');
   if (drives.aggression < 1) bits.push('outnumbered');
   if (drives.fear >= 2) bits.push('scarce');
+  if (drives.alarm >= 1) bits.push('alarmed');
   return bits.length > 0 ? bits.join('+') : 'calm';
 }
 
@@ -233,14 +318,22 @@ export function flyTags(state: GameState, player: PlayerId, action: Action): Fly
   switch (action.type) {
     case 'move': {
       const tags: FlyTag[] = [];
-      if (enemyUnitsAt(state, action.to, player).length > 0) tags.push('fight');
+      const fight = enemyUnitsAt(state, action.to, player).length > 0;
+      if (fight) tags.push('fight');
       const g = gardenAt(state, action.to);
       const held = playerUnitsAt(state, action.to, player).some((u) => u.kind === 'gnome');
+      // Kill a raider near our gardens, or reinforce a garden under threat.
+      if (localAlarm(state, player, action.to) > 0 && (fight || held)) tags.push('defend');
       if (g && !held && g.type !== 'flytrap' && !(g.type === 'home' && g.owner === player)) {
         tags.push('territory');
         if (g.type === 'dandelion' || g.type === 'mushroom' || g.type === 'maize') tags.push('harvest');
       }
-      return tags.length > 0 ? tags : ['advance'];
+      if (tags.length === 0) {
+        const unit = state.units[action.unitId];
+        const target = unit ? primaryTarget(state, player, unit.pos) : null;
+        if (unit && target && manhattan(action.to, target) < manhattan(unit.pos, target)) tags.push('advance');
+      }
+      return tags;
     }
     case 'plant':
     case 'upgrade':
@@ -309,6 +402,7 @@ export function flyBias(ctx: FlyContext, state: GameState, player: PlayerId, act
     if (tag === 'territory') drive = 0.5 + 0.5 * drives.aggression;
     else if (tag === 'plant' || tag === 'harvest') drive = drives.hunger;
     else if (tag === 'fight') drive = drives.aggression / drives.fear;
+    else if (tag === 'defend' && action.type === 'move') drive = localAlarm(state, player, action.to);
     bias += FLY_PRIORITY[tag] * drive + learned(ctx, tag);
   }
   return bias;
@@ -328,7 +422,8 @@ export function flyBrake(ctx: FlyContext, state: GameState, player: PlayerId, ac
     FLY_FIGHT_ODDS[nth] +
     0.15 * (ctx.drives.fear - 1) - // scarce reinforcements raise every bar
     0.1 * (ctx.drives.aggression - 1) - // a stronger force lowers it a little
-    (storming ? 0.1 : 0);
+    (storming ? 0.1 : 0) -
+    FLY_THREAT.oddsRelief * Math.min(2, action.type === 'move' ? localAlarm(state, player, action.to) : 0);
   if (odds < bar) return Math.min(score, END_TURN_SCORE - 0.05);
   // Accepted — but still priced: the expected loss, heavier when gnomes are scarce.
   return score - (1 - odds) * 2 * ctx.drives.fear;
@@ -382,8 +477,16 @@ function episodeFor(memory: FlyMemory, state: GameState, player: PlayerId): FlyE
   return fresh;
 }
 
+/**
+ * What the fly has learned about `tag` here, RELATIVE to the other tags in the
+ * same situation. Most rewards are positive, so raw values all drift upward
+ * together; centering keeps only the part that says "this paid off better than
+ * my other options", which is the part that should change behaviour.
+ */
 function learned(ctx: FlyContext, tag: FlyTag): number {
-  return ctx.brain.values[`${ctx.situation}:${tag}`] ?? 0;
+  let sum = 0;
+  for (const t of TAGS) sum += ctx.brain.values[`${ctx.situation}:${t}`] ?? 0;
+  return (ctx.brain.values[`${ctx.situation}:${tag}`] ?? 0) - sum / TAGS.length;
 }
 
 /** Non-home gardens where we have a gnome and the enemy has nothing. */
@@ -473,7 +576,9 @@ function rewardFor(
       if (ev.unitKind !== 'gnome') return null;
       return ev.player === player
         ? { amount: R.ownGnomeLost * scarcity(state, player), reason: 'lost a gnome' }
-        : { amount: R.enemyGnomeDestroyed, reason: 'enemy gnome destroyed' };
+        : heldEconomyGardens(state, player).some((g) => manhattan(g, ev.pos) <= FLY_THREAT.radius)
+          ? { amount: R.threatKilled, reason: 'killed a raider near our garden' }
+          : { amount: R.enemyGnomeDestroyed, reason: 'enemy gnome destroyed' };
     case 'fightStarted': {
       const attacker = ev.sides[1];
       if (attacker.kind !== 'player' || attacker.player !== player) return null;

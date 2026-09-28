@@ -9,8 +9,17 @@ connectome in this folder loads and runs but is not wired in yet; it will
 replace `flyDrives()`.
 
 Benchmark (200 games each, sides alternating, one brain learning throughout):
-Fly 47–151 vs Normal (2 draws), Fly 57–142 vs Hard (1 draw); Normal vs Normal
-is 93–107. It is currently weak and not yet improving with experience.
+
+| Matchup | Fly | CPU | Draws |
+|---|---|---|---|
+| Fly vs Normal | 91 | 109 | 0 |
+| Fly vs Hard | 70 | 128 | 2 |
+| Normal vs Normal (baseline) | 93 | 107 | 0 |
+
+The first version went 47–151 vs Normal: its incentive pulls outbid actually
+marching on the enemy, and its learned values all inflated together. Smaller
+pulls, an `advance` pull, centered learning and the garden-threat alarm fixed
+that; the alarm alone is worth ~19 wins (72 without it).
 
 ### Incentives
 
@@ -19,6 +28,10 @@ brake. Tuning lives in `FLY_REWARDS`, `FLY_PRIORITY` and `FLY_FIGHT_ODDS`.
 
 - One fight per turn at fair odds is fine; a 2nd needs ~62%, a 3rd ~85%.
 - Every bar rises as reinforcements run out, and lost gnomes cost more.
+- Threat alarm (`FLY_THREAT`): enemy gnomes within `radius` of an economy
+  garden the fly holds raise alarm (`alarmAt` of them = full alarm). Alarm
+  pulls it toward killing those raiders or reinforcing the garden, lowers the
+  odds it needs for that fight, and such kills pay extra.
 - Learned values persist across games in the browser's localStorage
   (`whimsy.flyBrain.v1`) — an intentional exception to DEPLOYMENT.md's
   no-local-storage posture, for this fork.

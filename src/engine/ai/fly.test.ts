@@ -6,14 +6,17 @@
 import { describe, expect, it } from 'vitest';
 import type { Action, GameState, PlayerId, Pos } from '../types';
 import { applyAction, chooseAiAction, createAiMemory, createGame, isGameOver } from '../index';
-import { mutate, toActionPhase, withGnome } from '../testkit';
+import { mutate, toActionPhase, withGarden, withGnome } from '../testkit';
 import type { FlyBrain } from './fly';
 import {
   FLY_FIGHT_ODDS,
+  FLY_THREAT,
   createFlyBrain,
   createFlyMemory,
   finishFlyGames,
+  flyBias,
   flyBrake,
+  flyDrives,
   flyObserve,
   flyRewardLog,
   flyTags,
@@ -142,6 +145,59 @@ describe('fly: tags', () => {
     const move: Action = { type: 'move', player: fly, unitId: 'any', to: { x: 2, y: 2 } };
     expect(flyTags(s, fly, move)).toEqual(['territory', 'harvest']);
     expect(flyTags(s, fly, { type: 'endTurn', player: fly })).toEqual(['pass']);
+  });
+});
+
+describe('fly: threats to held economy gardens', () => {
+  /**
+   * Fly holds a Mushroom at (2,1). `raiders` enemy gnomes stand within the
+   * threat radius of it; one more enemy stands far away at (5,5).
+   */
+  function raided(raiders: number): { state: GameState; fly: PlayerId } {
+    let s = toActionPhase(11);
+    const fly = s.turn!.activePlayer;
+    const enemy = (1 - fly) as PlayerId;
+    s = mutate(s, (d) => {
+      d.players[fly].difficulty = 'fly';
+    });
+    s = withGarden(s, { x: 2, y: 1 }, 'mushroom');
+    s = withGnome(s, fly, { x: 2, y: 1 }).state;
+    const near: Pos[] = [
+      { x: 3, y: 2 },
+      { x: 2, y: 3 },
+      { x: 1, y: 2 },
+    ];
+    for (const p of near.slice(0, raiders)) s = withGnome(s, enemy, p).state;
+    s = withGnome(s, enemy, { x: 5, y: 5 }).state;
+    return { state: s, fly };
+  }
+
+  const attack = (fly: PlayerId, to: Pos): Action => ({ type: 'move', player: fly, unitId: 'any', to });
+
+  it(`rings the alarm at ${FLY_THREAT.alarmAt} raiders within ${FLY_THREAT.radius}`, () => {
+    expect(flyDrives(raided(1).state, raided(1).fly).alarm).toBeLessThan(1);
+    const { state, fly } = raided(FLY_THREAT.alarmAt);
+    expect(flyDrives(state, fly).alarm).toBeGreaterThanOrEqual(1);
+  });
+
+  it('wants to kill a raider near its garden more than a distant enemy', () => {
+    const { state, fly } = raided(2);
+    const ctx = flyObserve(state, fly, createFlyMemory());
+    expect(flyTags(state, fly, attack(fly, { x: 3, y: 2 }))).toContain('defend');
+    expect(flyTags(state, fly, attack(fly, { x: 5, y: 5 }))).not.toContain('defend');
+    expect(flyBias(ctx, state, fly, attack(fly, { x: 3, y: 2 }))).toBeGreaterThan(
+      flyBias(ctx, state, fly, attack(fly, { x: 5, y: 5 })) + 2,
+    );
+  });
+
+  it('accepts worse odds to defend a garden than to attack elsewhere', () => {
+    // A 1-vs-2 is refused on the attack (see "fight rules"), but under a loud
+    // alarm the same odds are acceptable when the stack is a raiding party.
+    let { state, fly } = raided(3);
+    const enemy = (1 - fly) as PlayerId;
+    state = withGnome(state, enemy, { x: 3, y: 2 }).state; // stack two at (3,2)
+    const ctx = flyObserve(state, fly, createFlyMemory());
+    expect(flyBrake(ctx, state, fly, attack(fly, { x: 3, y: 2 }), 5)).toBeGreaterThan(END_TURN_SCORE);
   });
 });
 
